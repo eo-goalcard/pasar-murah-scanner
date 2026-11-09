@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#172554">
+<title>Scanner Pasar Murah</title>
+<script src="https://unpkg.com/html5-qrcode"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#172033}
+header{background:#172554;color:white;padding:18px;text-align:center}header h2{margin:0 0 5px;font-size:21px}header small{color:#bfdbfe}
+main{max-width:560px;margin:auto;padding:14px}.panel{background:white;border-radius:16px;padding:16px;margin-bottom:13px;box-shadow:0 2px 10px #0000000d}
+label{display:block;font-weight:bold;margin-bottom:8px}select,button{width:100%;padding:13px;border-radius:10px;font-size:16px}
+select{border:1px solid #cbd5e1;background:white}button{border:0;background:#1d4ed8;color:white;font-weight:bold;margin-top:10px}
+#reader{width:100%;overflow:hidden;border-radius:12px}#result{padding:14px;border-radius:12px;margin-top:12px;white-space:pre-line;font-weight:bold;text-align:center;background:#e2e8f0}
+.good{background:#dcfce7!important;color:#166534}.bad{background:#fee2e2!important;color:#991b1b}
+.muted{font-size:12px;color:#64748b;font-weight:normal}.stats{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.stat{background:#f8fafc;border-radius:12px;padding:13px}.stat b{display:block;font-size:25px}.stat span{font-size:12px;color:#64748b}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;padding:8px;border-bottom:1px solid #e2e8f0}
+</style>
+</head>
+<body>
+<header><h2>PASAR MURAH</h2><small>Sistem Verifikasi Kupon · 4 Loket</small></header>
+<main>
+<div class="panel">
+<label for="loket">Pilih loket</label>
+<select id="loket"><option>Loket 1</option><option>Loket 2</option><option>Loket 3</option><option>Loket 4</option></select>
+<p class="muted">Pilih sesuai loket tempat HP ini bertugas. Pilihan tersimpan di perangkat.</p>
+</div>
+<div class="panel">
+<label>Scan QR Code kupon</label>
+<div id="reader"></div>
+<div id="result">Kamera belum dijalankan. Tekan tombol Mulai Kamera.</div>
+<button id="start">Mulai Kamera</button>
+<button id="stop" style="display:none;background:#475569">Hentikan Kamera</button>
+</div>
+<div class="panel">
+<label>Rekap keseluruhan</label>
+<div class="stats">
+<div class="stat"><b id="total">1.250</b><span>Total kupon</span></div>
+<div class="stat"><b id="used">0</b><span>Sudah dilayani</span></div>
+<div class="stat"><b id="left">1.250</b><span>Belum dilayani</span></div>
+<div class="stat"><b id="dupes">0</b><span>Percobaan duplikat</span></div>
+</div></div>
+<div class="panel"><label>Rekap per loket</label><table><tbody id="loketRows"></tbody></table></div>
+<div class="panel"><label>10 aktivitas terbaru</label><table><tbody id="recent"><tr><td>Memuat...</td></tr></tbody></table></div>
+</main>
+<script>
+const API_URL = "https://script.google.com/macros/s/AKfycbzqqBxBXS4VT2yO6Jk-PCXPtmQHMpkRqZ0B8OvusgBTaAykPb1MAXyFP72X9H7b6wvUAg/exec";
+const $ = id => document.getElementById(id);
+let scanner = null, running = false, busy = false;
+const saved = localStorage.getItem("pasarMurahLoket");
+if (saved && /^Loket [1-4]$/.test(saved)) $("loket").value = saved;
+$("loket").addEventListener("change", () => localStorage.setItem("pasarMurahLoket", $("loket").value));
+
+function showResult(text, good) {$("result").textContent=text;$("result").className=good?"good":"bad";}
+function getKode(decoded) {
+  const s=String(decoded||"").trim();
+  if (/^\d{4}$/.test(s)) return s;
+  try {return new URL(s).searchParams.get("kode")||"";}
+  catch(e){const m=s.match(/[?&]kode=(\d{4})/);return m?m[1]:"";}
+}
+function jsonp(params) {
+  return new Promise((resolve,reject)=>{
+    const cb="pm_cb_"+Date.now()+"_"+Math.floor(Math.random()*100000);
+    const script=document.createElement("script");
+    const timer=setTimeout(()=>{cleanup();reject(new Error("Waktu koneksi habis"));},20000);
+    function cleanup(){clearTimeout(timer);delete window[cb];script.remove();}
+    window[cb]=data=>{cleanup();resolve(data);};
+    script.onerror=()=>{cleanup();reject(new Error("Tidak dapat terhubung ke server"));};
+    params.callback=cb;
+    script.src=API_URL+"?"+new URLSearchParams(params).toString();
+    document.body.appendChild(script);
+  });
+}
+async function onScan(decoded) {
+  if(busy)return;busy=true;
+  const kode=getKode(decoded);
+  if(!kode){showResult("QR tidak dikenali. Gunakan QR kupon resmi.",false);busy=false;return;}
+  try {
+    const r=await jsonp({action:"scan",kode: kode,loket:$("loket").value});
+    showResult(r.status+"\nKupon: "+r.kode+"\n"+(r.loket||"")+
+      (r.tanggal?"\n"+r.tanggal+" "+r.waktu:"")+"\n"+r.pesan,r.ok);
+    refreshDashboard();
+  } catch(e){showResult("Gagal terhubung ke server. Periksa internet lalu coba lagi.",false);}
+  setTimeout(()=>{busy=false;},1800);
+}
+async function startCamera(){
+  if(running)return;
+  if(!window.Html5Qrcode){showResult("Modul scanner tidak termuat. Periksa koneksi internet.",false);return;}
+  try {
+    if(!scanner)scanner=new Html5Qrcode("reader");
+    await scanner.start({facingMode:"environment"},{fps:10,qrbox:{width:240,height:240}},onScan,()=>{});
+    running=true;$("start").style.display="none";$("stop").style.display="block";
+    showResult("Kamera aktif. Arahkan ke QR Code kupon.",true);
+  }catch(e){showResult("Kamera tidak dapat dibuka. Buka melalui Chrome/Safari dan izinkan akses kamera.",false);}
+}
+async function stopCamera(){
+  if(!running||!scanner)return;
+  try{await scanner.stop();}catch(e){}
+  running=false;$("start").style.display="block";$("stop").style.display="none";
+}
+$("start").addEventListener("click",startCamera);
+$("stop").addEventListener("click",stopCamera);
+async function refreshDashboard(){
+  try{
+    const d=await jsonp({action:"dashboard"});
+    $("total").textContent=d.total.toLocaleString("id-ID");
+    $("used").textContent=d.berhasil.toLocaleString("id-ID");
+    $("left").textContent=d.belum.toLocaleString("id-ID");
+    $("dupes").textContent=d.duplikat.toLocaleString("id-ID");
+    $("loketRows").innerHTML=Object.keys(d.perLoket).map(k=>"<tr><td>"+k+"</td><td>"+d.perLoket[k]+"</td></tr>").join("");
+    $("recent").innerHTML=d.recent.length?d.recent.map(r=>"<tr><td>"+r.waktu+"</td><td>"+r.kode+"</td><td>"+r.loket+"</td><td>"+r.status+"</td></tr>").join(""):"<tr><td>Belum ada aktivitas.</td></tr>";
+  }catch(e){$("recent").innerHTML="<tr><td>Dashboard belum terhubung. Periksa URL Web App.</td></tr>";}
+}
+refreshDashboard();setInterval(refreshDashboard,10000);
+</script>
+</body>
+</html>
