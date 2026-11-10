@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#172554">
 <title>Scanner Pasar Murah</title>
-<script src="https://unpkg.com/html5-qrcode"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#f1f5f9;font-family:Arial,sans-serif;color:#172033}
 header{background:#172554;color:white;padding:18px;text-align:center}header h2{margin:0 0 5px;font-size:21px}header small{color:#bfdbfe}
@@ -17,14 +17,24 @@ select{border:1px solid #cbd5e1;background:white}button{border:0;background:#1d4
 .muted{font-size:12px;color:#64748b;font-weight:normal}.stats{display:grid;grid-template-columns:1fr 1fr;gap:9px}
 .stat{background:#f8fafc;border-radius:12px;padding:13px}.stat b{display:block;font-size:25px}.stat span{font-size:12px;color:#64748b}
 table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;padding:8px;border-bottom:1px solid #e2e8f0}
+/* Popup hasil scan */
+.modal{position:fixed;inset:0;background:rgba(15,23,42,.65);display:none;align-items:center;justify-content:center;padding:20px;z-index:100}
+.modal.show{display:flex}
+.box{background:white;border-radius:20px;padding:26px 22px 22px;width:100%;max-width:380px;text-align:center;box-shadow:0 10px 40px #0005}
+.box .icon{width:76px;height:76px;border-radius:50%;margin:0 auto 14px;font-size:44px;line-height:76px;color:white;font-weight:bold}
+.box h3{margin:0 0 10px;font-size:24px}
+.box .body{white-space:pre-line;line-height:1.55;font-size:15px;color:#334155}
+.box.m-good .icon{background:#16a34a}.box.m-good h3{color:#15803d}.box.m-good button{background:#16a34a}
+.box.m-bad .icon{background:#dc2626}.box.m-bad h3{color:#b91c1c}.box.m-bad button{background:#dc2626}
+.box button{margin-top:20px;font-size:18px;padding:15px}
 </style>
 </head>
 <body>
-<header><h2>PASAR MURAH</h2><small>Sistem Verifikasi Kupon · 4 Loket</small></header>
+<header><h2>PASAR MURAH</h2><small>Sistem Verifikasi Kupon · 5 Loket</small></header>
 <main>
 <div class="panel">
 <label for="loket">Pilih loket</label>
-<select id="loket"><option>Loket 1</option><option>Loket 2</option><option>Loket 3</option><option>Loket 4</option></select>
+<select id="loket"><option>Loket 1</option><option>Loket 2</option><option>Loket 3</option><option>Loket 4</option><option>Loket 5</option></select>
 <p class="muted">Pilih sesuai loket tempat HP ini bertugas. Pilihan tersimpan di perangkat.</p>
 </div>
 <div class="panel">
@@ -45,15 +55,52 @@ table{width:100%;border-collapse:collapse;font-size:13px}td,th{text-align:left;p
 <div class="panel"><label>Rekap per loket</label><table><tbody id="loketRows"></tbody></table></div>
 <div class="panel"><label>10 aktivitas terbaru</label><table><tbody id="recent"><tr><td>Memuat...</td></tr></tbody></table></div>
 </main>
+
+<!-- Popup hasil scan -->
+<div id="modal" class="modal" role="dialog" aria-modal="true" aria-labelledby="mTitle">
+  <div id="mBox" class="box">
+    <div id="mIcon" class="icon"></div>
+    <h3 id="mTitle"></h3>
+    <div id="mBody" class="body"></div>
+    <button id="mOk" type="button">OK</button>
+  </div>
+</div>
+
 <script>
 const API_URL = "https://script.google.com/macros/s/AKfycbzqqBxBXS4VT2yO6Jk-PCXPtmQHMpkRqZ0B8OvusgBTaAykPb1MAXyFP72X9H7b6wvUAg/exec";
 const $ = id => document.getElementById(id);
 let scanner = null, running = false, busy = false;
 const saved = localStorage.getItem("pasarMurahLoket");
-if (saved && /^Loket [1-4]$/.test(saved)) $("loket").value = saved;
+if (saved && /^Loket [1-5]$/.test(saved)) $("loket").value = saved;
 $("loket").addEventListener("change", () => localStorage.setItem("pasarMurahLoket", $("loket").value));
 
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
 function showResult(text, good) {$("result").textContent=text;$("result").className=good?"good":"bad";}
+
+/* Popup: scan berikutnya baru diterima setelah tombol OK ditekan */
+function showModal(ok, title, detail) {
+  $("mBox").className = "box " + (ok ? "m-good" : "m-bad");
+  $("mIcon").textContent = ok ? "✓" : "✕";
+  $("mTitle").textContent = title;
+  $("mBody").textContent = detail;
+  $("modal").classList.add("show");
+  $("mOk").focus();
+  try { if (navigator.vibrate) navigator.vibrate(ok ? 120 : [200,100,200]); } catch(e){}
+}
+function closeModal() {
+  $("modal").classList.remove("show");
+  busy = false;
+  refreshDashboard();
+}
+$("mOk").addEventListener("click", closeModal);
+document.addEventListener("keydown", e => {
+  if ($("modal").classList.contains("show") && (e.key === "Enter" || e.key === "Escape")) {
+    e.preventDefault(); closeModal();
+  }
+});
+
 function getKode(decoded) {
   const s=String(decoded||"").trim();
   if (/^\d{4}$/.test(s)) return s;
@@ -64,7 +111,7 @@ function jsonp(params) {
   return new Promise((resolve,reject)=>{
     const cb="pm_cb_"+Date.now()+"_"+Math.floor(Math.random()*100000);
     const script=document.createElement("script");
-    const timer=setTimeout(()=>{cleanup();reject(new Error("Waktu koneksi habis"));},20000);
+    const timer=setTimeout(()=>{cleanup();reject(new Error("Waktu koneksi habis"));},30000);
     function cleanup(){clearTimeout(timer);delete window[cb];script.remove();}
     window[cb]=data=>{cleanup();resolve(data);};
     script.onerror=()=>{cleanup();reject(new Error("Tidak dapat terhubung ke server"));};
@@ -74,16 +121,26 @@ function jsonp(params) {
   });
 }
 async function onScan(decoded) {
-  if(busy)return;busy=true;
+  if(busy)return;
+  busy=true; // tetap true sampai tombol OK ditekan
   const kode=getKode(decoded);
-  if(!kode){showResult("QR tidak dikenali. Gunakan QR kupon resmi.",false);busy=false;return;}
+  if(!kode){
+    showResult("QR tidak dikenali.",false);
+    showModal(false,"QR TIDAK DIKENALI","Gunakan QR Code kupon resmi.");
+    return;
+  }
+  showResult("Memproses kupon "+kode+"...",true);
   try {
-    const r=await jsonp({action:"scan",kode: kode,loket:$("loket").value});
-    showResult(r.status+"\nKupon: "+r.kode+"\n"+(r.loket||"")+
-      (r.tanggal?"\n"+r.tanggal+" "+r.waktu:"")+"\n"+r.pesan,r.ok);
-    refreshDashboard();
-  } catch(e){showResult("Gagal terhubung ke server. Periksa internet lalu coba lagi.",false);}
-  setTimeout(()=>{busy=false;},1800);
+    const r=await jsonp({action:"scan",kode:kode,loket:$("loket").value});
+    const detail="Kupon: "+(r.kode||kode)+(r.loket?"\n"+r.loket:"")+
+      (r.tanggal?"\n"+r.tanggal+" "+r.waktu:"")+"\n\n"+(r.pesan||"");
+    showResult(r.status+"\nKupon: "+(r.kode||kode),r.ok);
+    showModal(!!r.ok, r.ok?"BERHASIL":(r.status||"GAGAL"), detail);
+  } catch(e){
+    showResult("Gagal terhubung ke server.",false);
+    showModal(false,"GAGAL TERHUBUNG",
+      "Kupon "+kode+": status belum pasti.\nPeriksa internet lalu scan ulang.\n\nJika muncul DUPLIKAT, cek dulu rekap/log sebelum menolak peserta.");
+  }
 }
 async function startCamera(){
   if(running)return;
@@ -109,8 +166,8 @@ async function refreshDashboard(){
     $("used").textContent=d.berhasil.toLocaleString("id-ID");
     $("left").textContent=d.belum.toLocaleString("id-ID");
     $("dupes").textContent=d.duplikat.toLocaleString("id-ID");
-    $("loketRows").innerHTML=Object.keys(d.perLoket).map(k=>"<tr><td>"+k+"</td><td>"+d.perLoket[k]+"</td></tr>").join("");
-    $("recent").innerHTML=d.recent.length?d.recent.map(r=>"<tr><td>"+r.waktu+"</td><td>"+r.kode+"</td><td>"+r.loket+"</td><td>"+r.status+"</td></tr>").join(""):"<tr><td>Belum ada aktivitas.</td></tr>";
+    $("loketRows").innerHTML=Object.keys(d.perLoket).map(k=>"<tr><td>"+esc(k)+"</td><td>"+esc(d.perLoket[k])+"</td></tr>").join("");
+    $("recent").innerHTML=d.recent.length?d.recent.map(r=>"<tr><td>"+esc(r.waktu)+"</td><td>"+esc(r.kode)+"</td><td>"+esc(r.loket)+"</td><td>"+esc(r.status)+"</td></tr>").join(""):"<tr><td>Belum ada aktivitas.</td></tr>";
   }catch(e){$("recent").innerHTML="<tr><td>Dashboard belum terhubung. Periksa URL Web App.</td></tr>";}
 }
 refreshDashboard();setInterval(refreshDashboard,10000);
